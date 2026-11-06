@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Asistente Río Claro</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 0 auto; padding: 16px; background: #0b1220; color: #e8ecf4; }
+  h1 { font-size: 1.1rem; }
+  #banner { background: #1b2740; border: 1px solid #334066; padding: 8px 12px; border-radius: 8px; font-size: 0.85rem; margin-bottom: 12px; }
+  #chat { display: flex; flex-direction: column; gap: 10px; min-height: 300px; margin-bottom: 12px; }
+  .msg { padding: 10px 14px; border-radius: 10px; max-width: 85%; white-space: pre-wrap; }
+  .user { align-self: flex-end; background: #2d6cdf; color: white; }
+  .bot { align-self: flex-start; background: #1b2740; border: 1px solid #334066; }
+  .cite { font-size: 0.75rem; opacity: 0.7; margin-top: 4px; }
+  .flag { font-size: 0.75rem; color: #ffb020; margin-top: 4px; }
+  form { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #334066; background: #0b1220; color: inherit; }
+  button { padding: 10px 16px; border-radius: 8px; border: none; background: #2d6cdf; color: white; cursor: pointer; }
+  #mic { background: #334066; }
+</style>
+</head>
+<body>
+  <h1>Asistente interno — Distribuidora Río Claro</h1>
+  <div id="banner">🤖 Estás hablando con un asistente de IA de Distribuidora Río Claro.</div>
+  <div id="chat"></div>
+  <form id="form">
+    <input id="input" type="text" placeholder="Escribe tu pregunta..." autocomplete="off" />
+    <button id="mic" type="button" title="Hablar (requiere navegador compatible)">🎤</button>
+    <button type="submit">Enviar</button>
+  </form>
+
+<script>
+  // CAMBIA ESTO por la URL de tu Azure Function ya desplegada (incluye el "code=" de la function key).
+  // No se publica la clave real en este repositorio por seguridad: la versión que sirve el chat
+  // en producción (Storage Account con sitio web estático) sí tiene la URL completa configurada.
+  const FUNCTION_URL = "https://<TU-FUNCTION-APP>.azurewebsites.net/api/chat?code=<TU-FUNCTION-KEY>";
+  const sessionId = crypto.randomUUID();
+
+  const chat = document.getElementById("chat");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+
+  function addMessage(text, who, citation, flag) {
+    const div = document.createElement("div");
+    div.className = "msg " + who;
+    div.textContent = text;
+    if (citation) {
+      const c = document.createElement("div");
+      c.className = "cite";
+      c.textContent = "Fuente: " + citation;
+      div.appendChild(c);
+    }
+    if (flag) {
+      const f = document.createElement("div");
+      f.className = "flag";
+      f.textContent = flag;
+      div.appendChild(f);
+    }
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    addMessage(text, "user");
+    input.value = "";
+
+    try {
+      const res = await fetch(FUNCTION_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, message: text }),
+      });
+      const data = await res.json();
+      const flag = data.flags && data.flags.human_review_required ? "⚠️ Marcado para revisión humana" : "";
+      addMessage(data.reply, "bot", data.citation, flag);
+    } catch (err) {
+      addMessage("No pude conectar con el asistente. Intenta de nuevo en unos segundos.", "bot");
+    }
+  });
+
+  // Voz (opcional, solo si el navegador lo soporta; en producción se recomienda
+  // Azure AI Speech desde el backend para cumplir "solo herramientas de Azure").
+  const mic = document.getElementById("mic");
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRec) {
+    const rec = new SpeechRec();
+    rec.lang = "es-MX";
+    mic.addEventListener("click", () => rec.start());
+    rec.onresult = (e) => { input.value = e.results[0][0].transcript; };
+  } else {
+    mic.disabled = true;
+    mic.title = "Reconocimiento de voz no soportado en este navegador";
+  }
+</script>
+</body>
+</html>
