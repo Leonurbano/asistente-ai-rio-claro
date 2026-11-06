@@ -1,36 +1,35 @@
 #!/usr/bin/env bash
-# Script de despliegue — Fases 1, 3 (publicación) y 5 del SOP.
+# Script con el que aprovisioné la infraestructura del proyecto: Storage
+# (con sitio web estático para el frontend), Function App y Managed Identity,
+# dentro de mi suscripción de Azure for Students.
 #
-# IMPORTANTE: este script lo debes ejecutar TÚ, en tu propia máquina o en la
-# terminal de Cloud Shell de tu cuenta de Azure for Students, después de
-# `az login`. No se ejecutó en este entorno de desarrollo porque aquí no
-# hay (ni debe haber) credenciales de tu cuenta de Azure.
-#
-# Requisitos previos (Fase 0 del SOP, ya deberías tenerlos):
-#   - Grupo de recursos creado (ej. rg-proyecto2-rioclaro)
-#   - Presupuesto con alertas configurado
-#   - Región confirmada con disponibilidad de gpt-4o-mini en Foundry
+# Región: Azure for Students solo permite crear recursos en 5 regiones;
+# usé North Central US (las otras son Norway East, West US, Chile Central
+# y Brazil South).
 
 set -euo pipefail
 
 RESOURCE_GROUP="rg-proyecto2-rioclaro"
-LOCATION="westus"              # cambia si tu Fase 0 eligió otra región
+LOCATION="northcentralus"
 FUNCTION_APP_NAME="func-rioclaro-$RANDOM"
 STORAGE_ACCOUNT_NAME="strioclaro$RANDOM"
-STATIC_WEB_APP_NAME="swa-rioclaro"
-KEY_VAULT_NAME="kv-rioclaro-$RANDOM"
 
 echo "== Verificando sesión de Azure =="
 az account show --query "{subscription:name, id:id}" -o table
 
-echo "== Creando cuenta de almacenamiento (requerida por Azure Functions) =="
+echo "== Creando cuenta de almacenamiento =="
 az storage account create \
   --name "$STORAGE_ACCOUNT_NAME" \
   --resource-group "$RESOURCE_GROUP" \
   --location "$LOCATION" \
   --sku Standard_LRS
 
-echo "== Creando Function App (plan de Consumo — costo \$0 dentro de la capa gratuita) =="
+echo "== Habilitando sitio web estático (hospeda el frontend, sin Static Web Apps) =="
+az storage blob service-properties update \
+  --account-name "$STORAGE_ACCOUNT_NAME" \
+  --static-website --index-document index.html
+
+echo "== Creando Function App (plan de Consumo) =="
 az functionapp create \
   --name "$FUNCTION_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
@@ -40,31 +39,11 @@ az functionapp create \
   --runtime-version 3.11 \
   --functions-version 4
 
-echo "== Creando Key Vault =="
-az keyvault create \
-  --name "$KEY_VAULT_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --location "$LOCATION"
-
-echo "== Creando Static Web App (plan gratuito) =="
-az staticwebapp create \
-  --name "$STATIC_WEB_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --location "$LOCATION" \
-  --sku Free
-
 echo "== Habilitando Managed Identity (System Assigned) en la Function App =="
-# Esto reemplaza el uso de una API Key en texto plano: la Function App se
-# autentica contra Foundry con una identidad administrada por Azure,
-# sin ningún secreto que guardar, rotar o filtrar.
 az functionapp identity assign \
   --name "$FUNCTION_APP_NAME" \
   --resource-group "$RESOURCE_GROUP"
 
-# Guarda el principalId para el role assignment del paso manual de abajo
-# (se necesita el ID del recurso de Foundry, que aún no existe en este punto
-# del script — por eso el role assignment se deja como paso 4, después de
-# crear el proyecto de Foundry en el portal).
 IDENTITY_PRINCIPAL_ID=$(az functionapp identity show \
   --name "$FUNCTION_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
@@ -73,34 +52,29 @@ echo "Managed Identity creada. principalId: $IDENTITY_PRINCIPAL_ID"
 
 cat <<EOF
 
-== Siguiente paso MANUAL (requiere el portal de Foundry, Fase 1-2 del SOP) ==
-1. Ve a https://ai.azure.com, crea el proyecto de Foundry en este mismo
-   grupo de recursos ($RESOURCE_GROUP) y región ($LOCATION).
-2. Despliega el modelo gpt-4o-mini.
-3. Corre infra/provision_agent.py (en tu máquina, con 'az login' activo)
-   para crear el agente con la base de conocimiento y el system prompt
-   ya preparados en este proyecto — automatiza la Fase 2 completa.
-4. Dale a la Managed Identity de la Function App permiso sobre el proyecto
-   de Foundry (sustituye API Key por RBAC — sin secretos):
+== Lo que seguí haciendo manualmente después de este script ==
+1. Creé el proyecto de Foundry en https://ai.azure.com (mismo grupo de
+   recursos y región) y desplegué el modelo gpt-5-mini.
+2. Creé el agente (nombre, instrucciones de agent/system_prompt.md y la
+   base de conocimiento) desde el portal.
+3. Le di permiso a la Managed Identity sobre Foundry con el rol "Foundry
+   User" (es el único que cubre resolver agentes por nombre):
    az role assignment create \\
      --assignee "$IDENTITY_PRINCIPAL_ID" \\
-     --role "Azure AI Developer" \\
-     --scope "<resource-id-del-proyecto-de-foundry>"
-   (El resource ID lo obtienes con:
-     az resource show --resource-group "$RESOURCE_GROUP" \\
-       --resource-type "Microsoft.CognitiveServices/accounts/projects" \\
-       --name "<nombre-del-proyecto>" --query id -o tsv)
-5. Copia el PROJECT_ENDPOINT y AGENT_ID que te regrese provision_agent.py y
-   configúralos como variables de entorno de tu Function App — SIN API KEY,
-   la autenticación ya la resuelve la Managed Identity + el role assignment
-   del paso 4:
+     --role "Foundry User" \\
+     --scope "<resource-id-de-la-cuenta-de-foundry>"
+4. Configuré la Function App (sin API key):
    az functionapp config appsettings set --name "$FUNCTION_APP_NAME" \\
      --resource-group "$RESOURCE_GROUP" \\
-     --settings MOCK_MODE=false PROJECT_ENDPOINT="<...>" AGENT_ID="<...>"
-6. Publica el código: cd backend && func azure functionapp publish "$FUNCTION_APP_NAME"
-7. Publica el frontend: az staticwebapp deploy ... (o desde el portal, conectando este repo)
-8. Actualiza FUNCTION_URL en frontend/index.html con la URL real de tu función.
+     --settings MOCK_MODE=false PROJECT_ENDPOINT="<...>" AGENT_ID="<nombre-del-agente>"
+5. Publiqué el backend: cd backend && func azure functionapp publish "$FUNCTION_APP_NAME"
+6. Subí el frontend (con FUNCTION_URL ya actualizado) al contenedor \$web:
+   az storage blob upload --account-name "$STORAGE_ACCOUNT_NAME" --auth-mode key \\
+     -c '$web' -f frontend/index.html -n index.html
+7. Habilité CORS en la Function App para el origen del sitio estático:
+   az functionapp cors add --name "$FUNCTION_APP_NAME" --resource-group "$RESOURCE_GROUP" \\
+     --allowed-origins "https://$STORAGE_ACCOUNT_NAME.z*.web.core.windows.net"
 
-Recursos creados: $FUNCTION_APP_NAME, $STORAGE_ACCOUNT_NAME, $KEY_VAULT_NAME, $STATIC_WEB_APP_NAME
+Recursos creados: $FUNCTION_APP_NAME, $STORAGE_ACCOUNT_NAME
 Identidad administrada (principalId): $IDENTITY_PRINCIPAL_ID
 EOF
